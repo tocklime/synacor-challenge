@@ -1,8 +1,8 @@
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use std::fs::File;
 use std::io;
 use std::io::{Read, stdout, Write, stdin};
-use std::convert::{TryFrom, TryInto};
+use std::convert::TryInto;
 use itertools::Itertools;
 use num_enum::TryFromPrimitive;
 
@@ -34,23 +34,23 @@ pub enum Op {
 }
 
 #[derive(Debug)]
-pub struct Vm {
+pub struct Vm<'a> {
+    rom: &'a [u16],
     memory: HashMap<u16, u16>,
     stack: Vec<u16>,
     instruction_pointer: u16,
     running: bool,
-    dumping: bool,
     input: Vec<char>,
 }
 
-impl Vm {
-    pub fn new(program: &[u16]) -> Self {
+impl<'a> Vm<'a> {
+    pub fn new(program: &'a [u16]) -> Self  {
         Vm {
-            memory: program.iter().enumerate().map(|(i, x)| (i.try_into().unwrap(), *x)).collect(),
+            rom: program,
+            memory: (32768..32776).map(|x| (x,0)).collect(),
             stack: Vec::new(),
             instruction_pointer: 0,
             running: true,
-            dumping: false,
             input: Vec::new(),
         }
     }
@@ -60,22 +60,30 @@ impl Vm {
             self.get(i)
         } else { i }
     }
-    fn log(&self, s: String) {
-        if self.dumping {
-            print!("{}", s);
-        }
-    }
     fn fetch_set(&mut self) -> u16 {
-        let i = self.memory[&self.instruction_pointer];
+        let i = self.get(self.instruction_pointer);
         self.instruction_pointer += 1;
         //self.log(format!("{} ", i));
         i
     }
+    fn get_rom(&self, addr: u16) -> Option<u16> {
+        let a_us: usize = addr.into();
+        if a_us < self.rom.len() {
+            Some(self.rom[a_us])
+        } else {
+            None
+        }
+    }
     fn set(&mut self, address: u16, value: u16) {
-        self.memory.insert(address, value);
+        if self.get_rom(address.into()) == Some(value) {
+            self.memory.remove(&address);
+        } else {
+            self.memory.insert(address, value);
+        }
     }
     fn get(&mut self, address: u16) -> u16 {
-        *self.memory.entry(address).or_default()
+        self.memory.get(&address).cloned().or_else(|| self.get_rom(address)).unwrap_or_else(||
+            panic!("Can't get memory at {}",address))
     }
     fn binop<FN>(&mut self, f: FN)
         where FN: Fn(u16, u16) -> u16
@@ -163,22 +171,13 @@ impl Vm {
                 }
                 let a = self.fetch_set();
                 let i = self.input.pop().unwrap() as u16;
-                self.set(a,i);
+                self.set(a, i);
             }
             Op::Nop => (), // NoOp
         }
     }
-    pub fn dump(&self) {
-        println!("\nVM:\n St:{:?}\n IP: {}", self.stack, self.instruction_pointer);
-    }
     pub fn run(&mut self) {
         while self.running {
-            if self.instruction_pointer == 9999 {
-                self.dumping = true;
-            }
-            if self.dumping {
-                self.dump();
-            }
             self.step();
         }
     }
