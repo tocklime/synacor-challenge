@@ -1,3 +1,4 @@
+#![recursion_limit="10000000"]
 use std::collections::{HashMap, BTreeMap, HashSet};
 use std::cmp::{min, max};
 use std::fs::File;
@@ -8,7 +9,11 @@ use itertools::Itertools;
 use num_enum::TryFromPrimitive;
 use std::borrow::Cow;
 use std::hash::Hash;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
+mod mod_arith;
+use mod_arith::*;
 #[derive(Debug, TryFromPrimitive, PartialEq, Eq, Clone, Copy)]
 #[repr(u16)]
 pub enum Op {
@@ -45,6 +50,7 @@ pub struct Vm<'a> {
     running: bool,
     input: Vec<char>,
     output: String,
+    live_output: bool,
 }
 
 impl<'a> Vm<'a> {
@@ -57,6 +63,7 @@ impl<'a> Vm<'a> {
             running: true,
             input: Vec::new(),
             output: String::new(),
+            live_output: true,
         }
     }
     fn flash_rom(&mut self) {
@@ -69,6 +76,9 @@ impl<'a> Vm<'a> {
         self.rom = Cow::from(new_rom);
         let old_regs = self.memory.split_off(&32768);
         self.memory = old_regs;
+    }
+    fn dump(&mut self) {
+        println!("VM: Stack: {:?}, IP: {}", self.stack, self.instruction_pointer);
     }
     fn fetch_read(&mut self) -> u16 {
         let i = self.fetch_set();
@@ -190,7 +200,9 @@ impl<'a> Vm<'a> {
                 let ch: u16 = self.fetch_read();
                 let ch: char = std::char::from_u32(ch.into()).expect("Invalid char");
                 self.output.push(ch);
-                print!("{}",ch);
+                if self.live_output {
+                    print!("{}", ch);
+                }
             }
             Op::In => {
                 if self.input.is_empty() {
@@ -238,17 +250,35 @@ impl<'a> Vm<'a> {
         std::mem::swap(&mut self.output, &mut ans);
         ans
     }
-    pub fn run_to_input(&mut self) {
-        while self.running {
+    pub fn run_to_input(&mut self, running: Arc<AtomicBool>) {
+        running.store(true, Ordering::SeqCst);
+        while self.running && running.load(Ordering::SeqCst) {
             let op = self.peek_op();
             if op == Op::In && self.input.is_empty()
             { break; }
             self.step();
         }
+        running.store(false, Ordering::SeqCst);
     }
 }
 
 fn main() -> io::Result<()> {
+    for i in 3..32768 {
+        if i % 1000 == 0 {
+            println!("{}", i);
+        }
+        if fn6027a(4, 1, i) == 6 {
+            println!("Found solution {}", i);
+        }
+    }
+    let running = Arc::new(AtomicBool::new(true));
+    let r = running.clone();
+    ctrlc::set_handler(move || {
+        if !r.swap(false, Ordering::SeqCst) {
+            println!("Got Ctrl-C whilst not running, exiting");
+            std::process::exit(1);
+        }
+    }).expect("Error setting ctrl-c handler");
     let mut file = File::open("doc/challenge.bin")?;
     let mut data = Vec::new();
     file.read_to_end(&mut data)?;
@@ -260,7 +290,7 @@ fn main() -> io::Result<()> {
             hi << 8 | lo
         }).collect_vec();
     let mut vm = Vm::new(&program);
-    vm.run_to_input();
+    vm.run_to_input(running.clone());
     let mut step_no = 0;
     let mut saves: HashMap<Vm, usize> = HashMap::new();
     let mut by_step: HashMap<usize, Vm> = HashMap::new();
@@ -313,6 +343,16 @@ fn main() -> io::Result<()> {
                     println!("usage: load <a>");
                 }
             }
+        } else if s.starts_with("get ") {
+            let ws = s.trim().split(" ").collect_vec();
+            match ws[1].parse() {
+                Ok(x) => {
+                    println!("@{} = {:?}", x, vm.try_get(x));
+                }
+                _ => {
+                    println!("usage: get <a>");
+                }
+            }
         } else if s.starts_with("set ") {
             let ws = s.split(" ").collect_vec();
             let a: Result<u16, _> = ws[1].parse();
@@ -329,18 +369,101 @@ fn main() -> io::Result<()> {
             println!("{}", all_input);
         } else if s.starts_with("solve") {
             vm.input = PARTIAL_SOLUTION.chars().filter(|x| x != &'\r').rev().collect();
-            vm.run_to_input();
+            vm.run_to_input(running.clone());
             step_no += 1;
         } else if s.starts_with("dissassemble") {
-            println!("{}",vm.disassemble());
+            println!("{}", vm.disassemble());
+        } else if s.starts_with("dump") {
+            vm.dump();
+        } else if s.starts_with("search") {
+            let mut v_ref = vm.clone();
+            v_ref.live_output = false;
+            v_ref.set(6054, 21);
+            v_ref.set(6055, 21);
+            v_ref.set(6058, 0);
+            v_ref.flash_rom();
+            v_ref.input = "use teleporter\n".chars().rev().collect();
+            let _ = v_ref.take_output();
+            for i in 1..32768 {
+                if i % 100 == 0 {
+                    println!("{}", i);
+                }
+                let mut this_v = v_ref.clone();
+                this_v.set(32775, i);
+                this_v.run_to_input(running.clone());
+                let out_str = this_v.take_output();
+                if !out_str.contains("Miscalibration detected!") {
+                    println!("Got no miscalibration with R8 = {}", i);
+                }
+            }
         } else {
             vm.input = s.chars().filter(|x| x != &'\r').rev().collect();
-            vm.run_to_input();
+            vm.run_to_input(running.clone());
             step_no += 1;
         }
     }
     print!("{}", vm.take_output());
     Ok(())
+}
+pub fn fn6027a(a: u16, b: u16, c: u16) -> u16 {
+//Called with a=4, b = 1. Find c to make it return 6 in a.
+    /*
+        if a = 0 then b +1.
+        if b = 0 then f(a-1, c)
+        otherwise, f(a-1, f(a,b-1))
+    */
+    let a = match a {
+        0 => b                    + 1,
+        //1 => b            +     c + 1,
+        //2 => mod_mul(c + 1, b,32768)  + mod_mul(2, c, 32768) + 1,
+        //3 => (mod_pow(c+1,b+3,32768)).wrapping_sub(1 + mod_mul(2,c,32768)) / c,
+        _ => match b {
+            0 => fn6027a(a-1, c, c),
+            b => {
+                let new_r1 = fn6027a(a,b - 1, c);
+                return fn6027a(a-1, new_r1, c);
+            }
+        }
+    };
+    return a;
+
+ /*   match (a, b) {
+        (0,_) => b + 1,
+        (_,0) => fn6027a(a-1, c, c),
+        (_,_) => {
+            let new_r1 = fn6027a(a,b - 1, c);
+            return fn6027a(a-1, new_r1, c);
+        }
+    }*/
+}
+pub fn fn6027(cache: &mut HashMap<(u16,u16),u16>, r0: u16, r1: u16, r7: u16) -> u16 {
+//Called with r0=4, r1 = 1. Find r7 to make it return 6 in r0.
+    //if r0 < 3 {
+    //    return fn6027a(r0,r1,r7);
+   // }
+    let k = &(r0,r1);
+    if cache.contains_key(k) {
+        return cache[k];
+    }
+    //println!("Fn({}, {}, {})", r0, r1, r7);
+    let ans = match (r0, r1) {
+        (0,_) => (r1 + 1) % 32768,
+        (_,0) => //fn6027(cache, r0-1, r7, r7),
+            (r7+1).pow((r0-1).into()) + r7,
+        (_,_) => {
+            let new_r1 = fn6027(cache, r0,r1 - 1, r7);
+            fn6027(cache, r0-1, new_r1, r7)
+        }
+    };
+    cache.insert(*k,ans);
+    if r0 < 4{
+        assert_eq!(fn6027a(r0,r1,r7),ans);
+    }
+    if r0 == 3
+    {
+        println!("Fn({}, {}, {}) == {}", r0, r1, r7, ans);
+    }
+    ans
 }
 
 const PARTIAL_SOLUTION: &str = "doorway
@@ -390,7 +513,8 @@ use shiny coin
 use concave coin
 use corroded coin
 north
-take teleporter";
+take teleporter
+";
 
 
 /*
