@@ -12,8 +12,7 @@ use std::hash::Hash;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-mod mod_arith;
-use mod_arith::*;
+mod vault;
 #[derive(Debug, TryFromPrimitive, PartialEq, Eq, Clone, Copy)]
 #[repr(u16)]
 pub enum Op {
@@ -261,16 +260,12 @@ impl<'a> Vm<'a> {
         running.store(false, Ordering::SeqCst);
     }
 }
+mod ack;
 
 fn main() -> io::Result<()> {
-    for i in 3..32768 {
-        if i % 1000 == 0 {
-            println!("{}", i);
-        }
-        if fn6027a(4, 1, i) == 6 {
-            println!("Found solution {}", i);
-        }
-    }
+    //25734 ack::search();
+    vault::find_sol();
+
     let running = Arc::new(AtomicBool::new(true));
     let r = running.clone();
     ctrlc::set_handler(move || {
@@ -375,27 +370,11 @@ fn main() -> io::Result<()> {
             println!("{}", vm.disassemble());
         } else if s.starts_with("dump") {
             vm.dump();
-        } else if s.starts_with("search") {
-            let mut v_ref = vm.clone();
-            v_ref.live_output = false;
-            v_ref.set(6054, 21);
-            v_ref.set(6055, 21);
-            v_ref.set(6058, 0);
-            v_ref.flash_rom();
-            v_ref.input = "use teleporter\n".chars().rev().collect();
-            let _ = v_ref.take_output();
-            for i in 1..32768 {
-                if i % 100 == 0 {
-                    println!("{}", i);
-                }
-                let mut this_v = v_ref.clone();
-                this_v.set(32775, i);
-                this_v.run_to_input(running.clone());
-                let out_str = this_v.take_output();
-                if !out_str.contains("Miscalibration detected!") {
-                    println!("Got no miscalibration with R8 = {}", i);
-                }
-            }
+        } else if s.starts_with("patch-tele") {
+            vm.set(5485, 6);
+            vm.set(5489,21);
+            vm.set(5490,21);
+            vm.set(32775,25734);
         } else {
             vm.input = s.chars().filter(|x| x != &'\r').rev().collect();
             vm.run_to_input(running.clone());
@@ -404,66 +383,6 @@ fn main() -> io::Result<()> {
     }
     print!("{}", vm.take_output());
     Ok(())
-}
-pub fn fn6027a(a: u16, b: u16, c: u16) -> u16 {
-//Called with a=4, b = 1. Find c to make it return 6 in a.
-    /*
-        if a = 0 then b +1.
-        if b = 0 then f(a-1, c)
-        otherwise, f(a-1, f(a,b-1))
-    */
-    let a = match a {
-        0 => b                    + 1,
-        //1 => b            +     c + 1,
-        //2 => mod_mul(c + 1, b,32768)  + mod_mul(2, c, 32768) + 1,
-        //3 => (mod_pow(c+1,b+3,32768)).wrapping_sub(1 + mod_mul(2,c,32768)) / c,
-        _ => match b {
-            0 => fn6027a(a-1, c, c),
-            b => {
-                let new_r1 = fn6027a(a,b - 1, c);
-                return fn6027a(a-1, new_r1, c);
-            }
-        }
-    };
-    return a;
-
- /*   match (a, b) {
-        (0,_) => b + 1,
-        (_,0) => fn6027a(a-1, c, c),
-        (_,_) => {
-            let new_r1 = fn6027a(a,b - 1, c);
-            return fn6027a(a-1, new_r1, c);
-        }
-    }*/
-}
-pub fn fn6027(cache: &mut HashMap<(u16,u16),u16>, r0: u16, r1: u16, r7: u16) -> u16 {
-//Called with r0=4, r1 = 1. Find r7 to make it return 6 in r0.
-    //if r0 < 3 {
-    //    return fn6027a(r0,r1,r7);
-   // }
-    let k = &(r0,r1);
-    if cache.contains_key(k) {
-        return cache[k];
-    }
-    //println!("Fn({}, {}, {})", r0, r1, r7);
-    let ans = match (r0, r1) {
-        (0,_) => (r1 + 1) % 32768,
-        (_,0) => //fn6027(cache, r0-1, r7, r7),
-            (r7+1).pow((r0-1).into()) + r7,
-        (_,_) => {
-            let new_r1 = fn6027(cache, r0,r1 - 1, r7);
-            fn6027(cache, r0-1, new_r1, r7)
-        }
-    };
-    cache.insert(*k,ans);
-    if r0 < 4{
-        assert_eq!(fn6027a(r0,r1,r7),ans);
-    }
-    if r0 == 3
-    {
-        println!("Fn({}, {}, {}) == {}", r0, r1, r7, ans);
-    }
-    ans
 }
 
 const PARTIAL_SOLUTION: &str = "doorway
@@ -531,4 +450,20 @@ a: twisty maze of little passages, all alike
 b: maze of little twisty passages, all alike
 c: little maze of twisty passages, all alike
 d: twisty alike of little passages, all maze
+*/
+
+
+/* vault
+
+        * 8 -  1 (Vault: 30)
+
+        4 * 11 *
+
+        + 4 -  18
+
+ Orb 22 O - 9  *
+
+ 22
+
+
 */
